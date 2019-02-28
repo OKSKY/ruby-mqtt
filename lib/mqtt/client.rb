@@ -146,7 +146,7 @@ module MQTT
         attributes[:port] = args[1] unless args[1].nil?
       end
 
-      raise ArgumentError, 'Unsupported number of arguments' if args.length >= 3
+      puts "ArgumentError -> Unsupported number of arguments" if args.length >= 3
 
       # Merge arguments with default values for attributes
       ATTR_DEFAULTS.merge(attributes).each_pair do |k, v|
@@ -167,6 +167,8 @@ module MQTT
       @read_thread = nil
       @write_semaphore = Mutex.new
       @pubacks_semaphore = Mutex.new
+      @reconnect_limit = -1
+      @reconnect_delay = 5
     end
 
     # Get the OpenSSL context, that is used if SSL/TLS is enabled
@@ -219,13 +221,13 @@ module MQTT
       @client_id = clientid unless clientid.nil?
 
       if @client_id.nil? || @client_id.empty?
-        raise 'Must provide a client_id if clean_session is set to false' unless @clean_session
+        puts 'Must provide a client_id if clean_session is set to false' unless @clean_session
 
         # Empty client id is not allowed for version 3.1.0
         @client_id = MQTT::Client.generate_client_id if @version == '3.1.0'
       end
 
-      raise 'No MQTT server host set when attempting to connect' if @host.nil?
+      puts 'No MQTT server host set when attempting to connect' if @host.nil?
 
       unless connected?
         # Create network socket
@@ -283,6 +285,26 @@ module MQTT
       end
     end
 
+    def reconnect
+      Thread.new do
+        counter = 0
+        while @reconnect_limit >= counter || @reconnect_limit == -1 do
+          counter += 1
+          puts "New reconnect attempt..."
+          connect
+          if connected?
+            break
+          else
+            sleep @reconnect_delay
+          end
+        end
+        unless connected?
+          puts "Reconnection attempt counter is over. (#{@reconnect_limit} times)"
+          disconnect
+        end
+      end
+    end
+
     # Disconnect from the MQTT server.
     # If you don't want to say goodbye to the server, set send_msg to false.
     def disconnect(send_msg = true)
@@ -308,8 +330,8 @@ module MQTT
 
     # Publish a message on a particular topic to the MQTT server.
     def publish(topic, payload = '', retain = false, qos = 0)
-      raise ArgumentError, 'Topic name cannot be nil' if topic.nil?
-      raise ArgumentError, 'Topic name cannot be empty' if topic.empty?
+      puts "ArgumentError -> Topic name cannot be nil" if topic.nil?
+      puts "ArgumentError -> 'Topic name cannot be empty" if topic.empty?
 
       packet = MQTT::Packet::Publish.new(
         :id => next_packet_id,
@@ -460,7 +482,7 @@ module MQTT
         @socket.close
         @socket = nil
       end
-      Thread.current[:parent].raise(exp)
+      puts exp
     end
 
     def handle_packet(packet)
@@ -487,7 +509,7 @@ module MQTT
         send_packet(packet)
         @last_ping_request = Time.now
       elsif Time.now > @last_ping_response + response_timeout
-        raise MQTT::ProtocolException, "No Ping Response received for #{response_timeout} seconds"
+        puts "MQTT::ProtocolException -> No Ping Response received for #{response_timeout} seconds"
       end
     end
 
@@ -500,7 +522,8 @@ module MQTT
       Timeout.timeout(@ack_timeout) do
         packet = MQTT::Packet.read(@socket)
         if packet.class != MQTT::Packet::Connack
-          raise MQTT::ProtocolException, "Response wasn't a connection acknowledgement: #{packet.class}"
+          puts "MQTT::ProtocolException -> Response wasn't a connection acknowledgement: #{packet.class}"
+          reconnect
         end
 
         # Check the return code
@@ -508,15 +531,14 @@ module MQTT
           # 3.2.2.3 If a server sends a CONNACK packet containing a non-zero
           # return code it MUST then close the Network Connection
           @socket.close
-          raise MQTT::ProtocolException, packet.return_msg
+          puts " MQTT::ProtocolException -> packet.return_msg"
         end
       end
     end
 
     # Send a packet to server
     def send_packet(data)
-      # Raise exception if we aren't connected
-      raise MQTT::NotConnectedException unless connected?
+      puts "MQTT::NotConnectedException" unless connected?
 
       # Only allow one thread to write to socket at a time
       @write_semaphore.synchronize do
@@ -531,7 +553,7 @@ module MQTT
       elsif uri.scheme == 'mqtts'
         ssl = true
       else
-        raise 'Only the mqtt:// and mqtts:// schemes are supported'
+        puts 'Only the mqtt:// and mqtts:// schemes are supported'
       end
 
       {
